@@ -1,0 +1,237 @@
+
+<html>
+<head>
+	<script type="text/JavaScript" src="SIPml-api.js"></script>
+    <script type="text/JavaScript">
+        var userName;
+        var password;
+        var domain;
+        var callee;
+		var callId;
+		var currentPhone;
+		var localPort;
+		var proxyServer;
+		var stunServers;
+		var websocketProxy;
+		var sipStack;
+		var registerSession;
+		var state = "";
+        var callSession=[];
+
+        function $(name)
+        {
+            return document.getElementById(name);
+        }
+
+		function acceptCall(e)
+		{
+			console.info(e);
+			if (callSession[0]) {
+				e.newSession.hangup();
+			}
+			callSession[0] = e.newSession;
+			if (confirm("Incoming call to " + callSession[0].o_session.o_uri_to.tostring() + " from " + callSession[0].o_session.o_uri_from.tostring()))
+			{
+				var conf = {
+					audio_remote: document.getElementById('audio_remote'),
+					events_listener: { events: '*', listener: sipEventsListener } // optional: '*' means all events
+				};
+				var res = callSession[0].accept(conf);
+				if (res != 0)
+					$("callResult").innerHTML = "failed to answer call"
+			}
+			else
+				callSession[0].hangup({events_listener: { events: '*', listener: sipEventsListener }});
+		}
+		
+        function load()
+        {
+            userName = $('userName');
+            password = $('password');
+            domain = $('domain');
+            callee = $('callee');
+			proxyServer = $('proxyServer')
+			websocketProxy = $('websocketProxy')
+			stunServers = $('stunServers')
+            var readyCallback = function(e){
+				$("regResult").innerHTML = "init ok"
+                //createSipStack(); // see next section
+            };
+            var errorCallback = function(e){
+                console.error('Failed to initialize the engine: ' + e.message);
+				$("regResult").innerHTML = 'Failed to initialize the engine: ' + e.message
+            }
+
+			SIPml.setDebugLevel("warn");
+            SIPml.init(readyCallback, errorCallback);	
+        }
+
+		function register()
+		{
+			createSipStack();
+		}
+
+		var total =0;
+		function createSipStack()
+		{
+			var eventsListener = function(e){
+                if(e.type == 'started'){
+                    $("regResult").innerHTML = "sip stack started"
+					login();
+                }
+                else if(e.type == 'i_new_message'){ // incoming new SIP MESSAGE (SMS-like)
+                    //acceptMessage(e);
+                }
+                else if(e.type == 'i_new_call'){ // incoming audio/video call
+					var timeoutAcceptCall = function () {
+						acceptCall(e);
+					}
+					setTimeout(timeoutAcceptCall, 1000); //chrome need timeout or separate tread?... why? I don't know 
+                }
+				else
+					tsk_utils_log('info', 'session event = ' + e.type);
+            }
+			sipStack = new SIPml.Stack({
+                        realm: domain.value, // mandatory: domain name
+                        impi: userName.value, // mandatory: authorization name (IMS Private Identity)
+                        impu: 'sip:'+ userName.value + '@' + domain.value, // mandatory: valid SIP Uri (IMS Public Identity)
+                        password: password.value, // optional
+                        display_name: userName.value, // optional
+                        websocket_proxy_url: websocketProxy.value, // optional
+                        outbound_proxy_url: proxyServer.value, // optional
+						ice_servers : stunServers.value,
+						enable_media_stream_cache : true,
+                        enable_rtcweb_breaker: true, // optional
+                        events_listener: { events: '*', listener: eventsListener }, // optional: '*' means all events
+                        sip_headers: [ // optional
+                                { name: 'User-Agent', value: 'IM-client/OMA1.0 sipML5-v1.0.0.0' },
+                                { name: 'Organization', value: 'Naumen' }
+                        ]
+                    }
+                );
+			sipStack.start();
+		}
+		function login()
+		{
+			var eventsListener = function(e){
+				tsk_utils_log('info', 'session event = ' + e.type);
+                if (e.type == 'connected' && e.session == registerSession){
+                    $("regResult").innerHTML = "registered ok"
+					state="connected";
+                }
+				if (e.type == 'disconnected')
+                    $("regResult").innerHTML = "disconnected"
+            }
+			try {
+
+				registerSession = sipStack.newSession('register', {expires: 20,
+					events_listener: { events: '*', listener: eventsListener }, // optional: '*' means all events
+	                            sip_caps: [
+       	                                 { name: '+g.oma.sip-im', value: null },
+              	                          { name: '+audio', value: null },
+                     	                   { name: 'language', value: '\"en,fr\"' }
+                            	]
+				});
+				registerSession.register();
+			}
+			catch (e) {
+				$("regResult").innerHTML = "<b>1:" + e + "</b>";
+			}
+		}
+
+		var sipEventsListener = function(e){
+			tsk_utils_log('info', 'session event = ' + e.type);
+			$('callResult').innerHTML = e.description;
+            if (e.type == 'terminating' || e.type == 'terminated')
+			{
+				if (e.session == registerSession) {
+					$("regResult").innerHTML = "disconnected"
+					callSession[0] = null;
+					registerSession = null;
+				}
+				else if (e.session == callSession[0]) {
+					callSession[0] = null;
+				}
+			} // 'terminating' | 'terminated'
+		}
+
+		function makeCall()
+		{
+			var number = $("number").value;
+			var i = 0;
+			var oneCall = function (){
+				var conf = {
+					audio_remote: document.getElementById('audio_remote'),
+					events_listener: { events: '*', listener: sipEventsListener } // optional: '*' means all events
+				};
+				callSession[i] = sipStack.newSession('call-audio', conf);
+				var res = callSession[i].call(callee.value);
+				if (res != 0)
+					$("callResult").innerHTML = "failed to make call"
+				else {
+					var dialog = sipStack.o_stack.o_layer_dialog.find_by_ss(callSession[i].o_session);
+					if (dialog)
+						$("callId").innerHTML = dialog.s_callid;
+				}
+				i++;
+				if (i < number)
+					setTimeout(oneCall,i == 1 ? 2000:500);
+				
+			}
+			oneCall();
+			//setTimeout(hangUp, 50000);
+		}
+		
+		function hangUp()
+		{
+			var i = 0;
+			var hangUpOneCall = function (){
+				if (i >= callSession.length)
+				{
+					callSession =[];
+					//setTimeout(makeCall, 50000);
+					total++;
+					$("total").innerHTML = "total storms = " + total;
+					return;
+				}
+				if (callSession[i]) {
+					$('callResult').innerHTML = '<i>Terminating the call...</i>';
+					callSession[i].hangup({events_listener: { events: '*', listener: sipEventsListener }});
+				}
+				i++;
+				setTimeout(hangUpOneCall, 100);
+			}
+			hangUpOneCall();
+		}
+
+		function unregister()
+		{
+			sipStack.stop();
+		}
+		
+    </script>
+</head>
+<body onload="load()">
+    <div id="skorophoneBody">
+        <div>
+        <table>
+		<td>userName:</td><td><input id="userName" type="text" value="a_p_t_mail.ru"/></td><tr/>
+        <td>password:</td><td><input id="password" type="password" value = "nxzlsefy"/></td><tr/>
+        <td>domain:</td><td><input id="domain" type="text" value = "91.232.196.84"/></td><tr/>
+        <td>websocket proxy:</td><td><input id="websocketProxy" type="text" value="ws://91.232.196.84:10080"/></td><tr/>
+        <td>proxy server:</td><td><input id="proxyServer" type="text" value=""/></td><tr/>
+        <td>stun servers:</td><td><input id="stunServers" type="text" value="[{url:'stun:stun.l.google.com:19302'}]"/></td><tr/>
+        <td><button class="button" onclick="register()">register</button></td><td>reg status = <div id="regResult"/></td><tr/>
+        <td><button class="button" onclick="unregister()">unregister</button></td><tr/>
+        <td>callee:</td><td><input id="callee" type="text" value = "sip:0666@91.232.196.84"/></td><tr/>
+        <td>number <input id="number" type="text" value ="1"/><button class="button" onclick="makeCall()">call</button><td><button class="button" onclick="hangUp()">hangUp</button></td></td><td>call status = <div id="callResult"/></td><tr/>
+		<td>call id = <div id="callId"/></td><tr/>
+        <div id="total"/>
+		</table>
+		</div><br/>
+        <br/>
+		
+    </div>
+<audio id="audio_remote" autoplay="autoplay" />
+</body>
+</html>
